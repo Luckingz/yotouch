@@ -1,19 +1,8 @@
-Here is the **fully revised, Cardano-tailored, YoTouch README**, rewritten from the ground up to reflect:
-
-✅ New name: **YoTouch**
-✅ Hackathon: **Cardano Blockchain**, not Zenith
-✅ Strong emphasis on **identity**, **social-proof verification**, **community validators**, **transparency**, **decentralization**, and **unique innovation**
-✅ Very rich, professional, and comprehensive — suitable for GitHub reviewers and hackathon judges
-
----
-
-# **YoTouch — Decentralized Identity & Social-Proof Verification on Cardano**
+YoTouch — Decentralized Identity & Social-Proof Verification on Cardano
 
 *A Trust Layer for People, Communities, and Digital Services*
 
----
-
-## 🚀 **Overview**
+🚀 **Overview**
 
 **YoTouch** is a decentralized digital identity and social-proof verification system built for the **Cardano blockchain**.
 It provides a unified, tamper-proof way for individuals to prove *who they are*, *where they live*, and *that they are trusted by their community*—all without depending on a centralized authority.
@@ -27,8 +16,6 @@ Instead of traditional KYC models where only institutions validate identity, **Y
 * **Decentralized proofs stored immutably on Cardano**
 
 This creates an identity score and verification proof that is portable, cryptographically secure, and nearly impossible to forge.
-
----
 
 # 🌍 **Why YoTouch Exists**
 
@@ -47,8 +34,6 @@ In real life, however, people *do* have identity—validated every day through:
 
 **YoTouch uses blockchain and AI to digitize this natural social trust process.**
 This creates a digital identity primitive that works *even where government ID systems fail*—while still integrating with them when available.
-
----
 
 # 🔑 **Key Innovations**
 
@@ -369,26 +354,3 @@ Tamper-proof, universally verifiable, decentralized.
   metadata/
   test/
 ```
-
----
-
-# 🧭 Next Steps for Hackathon Demo
-
-* Demo user onboarding
-* Show AI verification passing
-* Show reviewers approving
-* Display final score
-* Push hash into Cardano testnet
-* Provide transaction link for judges
-
----
-
-If you want, I can also generate:
-
-✅ A polished **pitch deck**
-✅ A **whitepaper-style technical spec**
-✅ A **validator incentive model**
-✅ A **system diagram/architecture graphic**
-✅ A **Plutus V2 minimal contract** for storing verification hashes
-
-Just tell me: **“Generate the pitch deck”** or whatever you want next.

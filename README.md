@@ -10,12 +10,12 @@ It provides a unified, tamper-proof way for individuals to prove *who they are*,
 Instead of traditional KYC models where only institutions validate identity, **YoTouch blends:**
 
 * **Biometric verification** (face match + liveness)
-* **National identity confirmation** (NIN/BVN where available)
+* **National identity confirmation** (NIN/BVN via api)
 * **Address validation**
 * **Community-based social trust from verifiable human reviewers**
 * **Decentralized proofs stored immutably on Cardano**
 
-This creates an identity score and verification proof that is portable, cryptographically secure, and nearly impossible to forge.
+This creates an **identity score and verification proof that is portable, cryptographically secure, and nearly impossible to forge**.
 
 # 🌍 **Why YoTouch Exists**
 
@@ -33,7 +33,7 @@ In real life, however, people *do* have identity—validated every day through:
 * People who know and trust them
 
 **YoTouch uses blockchain and AI to digitize this natural social trust process.**
-This creates a digital identity primitive that works *even where government ID systems fail*—while still integrating with them when available.
+This creates a digital identity primitive that works *even where government ID systems fail* — while still integrating with them when available.
 
 # 🔑 **Key Innovations**
 
@@ -43,15 +43,15 @@ This is YoTouch’s most powerful and unique feature.
 
 Each user is verified by **two tiers of human validators**:
 
-### **Primary Validators (People Who Know You Personally)**
+### **Primary Validators (People Who are Prominant in Societies)**
 
-These are individuals from the user’s real-life network:
+These are individuals prominant and holds community's respect like:
 
-* Colleagues
-* Neighbors
-* Teachers
+* Traditional rulers
+* Popular politicians
+* Organisational heads (Directors and a like)
 * Employers
-* Community leaders
+* Pastors/Imams
 
 They verify claims such as:
 

@@ -132,10 +132,10 @@ This data is encrypted immediately using AES-256.
 AI compares:
 
 * User selfie
-* The stored NIN/BVN image (mock/demo mode allowed)
-* Facial embeddings using ArcFace or FaceNet
+* The stored NIN/BVN image
+* Facial embeddings using ArcFace
 
-### 🔹 Liveness Detection (20 pts)
+### 🔹 Liveness Detection (10 pts)
 
 Simple challenge-response:
 
@@ -147,15 +147,7 @@ Protects against spoofing.
 
 ---
 
-## **Step 3 — Document + Address Checks (15 pts)**
-
-* OCR analysis on supporting documents
-* AI checks for anomalies and manipulations
-* Geolocation cross-checking (optional)
-
----
-
-## **Step 4 — Social-Proof Validation (15 pts)**
+## **Step 4 — Social-Proof Validation (40 pts)**
 
 Primary and secondary validators confirm:
 
@@ -176,13 +168,12 @@ Validators with higher reputation earn more influence in the scoring model.
 
 ## **Step 6 — Final Score Computation (0–100)**
 
-| Check Type                    | Weight |
-| ----------------------------- | ------ |
-| Face Match                    | 40 pts |
-| Liveness                      | 20 pts |
-| NIN/BVN Confirmation          | 15 pts |
-| Address + Docs                | 15 pts |
-| Reviewer Reputation Influence | 10 pts |
+| Check Type                            | Weight |
+| ------------------------------------  | ------ |
+| Face Match and NIN/BVN confirmation   | 40 pts |
+| Liveness                              | 10 pts |
+| Social proof and Address  Validation  | 40 pts |
+| Reviewer Reputation Influence         | 10 pts |
 
 ---
 

@@ -49,26 +49,26 @@ These are individuals prominant and holds community's respect like:
 
 * Traditional rulers
 * Popular politicians
-* Organisational heads (Directors and a like)
+* Organisational heads (Directors and the likes)
 * Employers
 * Pastors/Imams
 
 They verify claims such as:
 
-* “This is the real person.”
-* “This is their correct address.”
-* “We know them physically.”
+* “That this is the real person.”
+* “Confirm that they belong to our community by confirming the address they provide.”
+* “That we know them physically.”
 
 ### **Secondary Validators (Independent Community Validators)**
 
-Trained and approved validators from the YoTouch community who do **neutral, objective** reviews.
+Trusted and approved users by primary validators from the YoTouch community who do **neutral, objective** reviews.
 
 They verify:
 
 * Consistency
 * Liveness
-* Documentation accuracy
 * Fraud patterns
+* Secondary Address review
 
 ### 🧠 **Validator Reputation System**
 
@@ -117,10 +117,9 @@ in a single unified workflow.
 User submits:
 
 * Full name
-* NIN/BVN (optional but increases score)
+* NIN & BVN
 * Selfie + short video
 * Residential address
-* Utility bill or supporting document
 
 This data is encrypted immediately using AES-256.
 

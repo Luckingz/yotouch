@@ -4,7 +4,7 @@ YoTouch — Decentralized Identity & Social-Proof Verification on Cardano
 
 🚀 **Overview**
 
-**YoTouch** is a decentralized digital identity and social-proof verification system built for the **Cardano blockchain**.
+**YoTouch** is a decentralized digital identity and social-proof verification system built on the **Cardano blockchain**.
 It provides a unified, tamper-proof way for individuals to prove *who they are*, *where they live*, and *that they are trusted by their community*—all without depending on a centralized authority.
 
 Instead of traditional KYC models where only institutions validate identity, **YoTouch blends:**
@@ -55,7 +55,7 @@ These are individuals prominant and holds community's respect like:
 
 They verify claims such as:
 
-* “That this is the real person.”
+* “This is the real person.”
 * “Confirm that they belong to our community by confirming the address they provide.”
 * “That we know them physically.”
 
@@ -190,6 +190,7 @@ Then stored on **Cardano** using:
 * A lightweight Plutus script
 * Cost-efficient UTxO data pattern
 * Immutable verifiable proof
+* Mint digital address proof
 
 This allows:
 

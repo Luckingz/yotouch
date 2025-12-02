@@ -37,10 +37,14 @@ interface ProfileRecord {
   nin: string | null;
   bvn: string | null;
   residential_address: string | null;
+  address_clarity: string | null;
+  address_landmarks: string | null;
+  address_directions: string | null;
+  verification_status: string | null;
 }
 
 const FacialVerification = () => {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const navigate = useNavigate();
   const [isProcessing, setIsProcessing] = useState(false);
   const [profile, setProfile] = useState<ProfileRecord | null>(null);
@@ -61,12 +65,13 @@ const FacialVerification = () => {
   const [addressMatchScore, setAddressMatchScore] = useState<number | null>(
     null
   );
+  const [addressHydrated, setAddressHydrated] = useState(false);
 
   type Stage = "records" | "facial" | "address" | "submitted";
 
   const stageOrder: Stage[] = ["records", "facial", "address", "submitted"];
 
-  const currentStage: Stage = !hasConfirmedRecords
+  const derivedStage: Stage = !hasConfirmedRecords
     ? "records"
     : !aiComplete
     ? "facial"
@@ -74,7 +79,30 @@ const FacialVerification = () => {
     ? "address"
     : "submitted";
 
-  const isFinalStage = currentStage === "submitted";
+  const [activeStage, setActiveStage] = useState<Stage>("records");
+  const derivedIndex = stageOrder.indexOf(derivedStage);
+  const activeIndex = stageOrder.indexOf(activeStage);
+
+  useEffect(() => {
+    setActiveStage(derivedStage);
+  }, [derivedStage]);
+
+  const canGoPrev = activeIndex > 0;
+  const canGoNext = activeIndex < derivedIndex;
+
+  const goToPrevStage = () => {
+    if (canGoPrev) {
+      setActiveStage(stageOrder[activeIndex - 1]);
+    }
+  };
+
+  const goToNextStage = () => {
+    if (canGoNext) {
+      setActiveStage(stageOrder[activeIndex + 1]);
+    }
+  };
+
+  const isFinalStage = activeStage === "submitted";
 
   const stageCopy = useMemo(
     () => ({
@@ -98,10 +126,18 @@ const FacialVerification = () => {
     []
   );
 
-  // Redirect to auth if not logged in
-  if (!user) {
-    navigate("/auth");
-    return null;
+  useEffect(() => {
+    if (!loading && !user) {
+      navigate("/auth", { replace: true });
+    }
+  }, [loading, user, navigate]);
+
+  if (loading || !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
   }
 
   useEffect(() => {
@@ -113,7 +149,9 @@ const FacialVerification = () => {
         setFetchError(null);
         const { data, error } = await supabase
           .from("profiles")
-          .select("first_name, last_name, nin, bvn, residential_address")
+          .select(
+            "first_name, last_name, nin, bvn, residential_address, address_clarity, address_landmarks, address_directions, verification_status"
+          )
           .eq("id", user.id)
           .maybeSingle();
 
@@ -140,9 +178,11 @@ const FacialVerification = () => {
         const { data, error } = await supabase
           .from("verification_requests")
           .select(
-            "id, nin_bvn, face_match_score, liveness_score, residential_claim, status"
+            "id, nin_bvn, face_match_score, liveness_score, residential_claim, status, address_match_score"
           )
           .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
           .maybeSingle();
 
         if (error && error.code !== "PGRST116") {
@@ -162,6 +202,7 @@ const FacialVerification = () => {
 
           // Restore step 3: address submission
           if (data.residential_claim) {
+            setAddressSubmitted(true);
             try {
               // Handle both string and object types (Supabase might auto-parse JSONB)
               const parsed =
@@ -170,30 +211,30 @@ const FacialVerification = () => {
                   : data.residential_claim;
 
               if (parsed && typeof parsed === "object") {
-                const hasAddress =
-                  parsed.address && parsed.landmarks && parsed.directions;
+                setAddressForm({
+                  residentialAddress: parsed.address || "",
+                  addressClarity:
+                    parsed.clarity &&
+                    ADDRESS_CLARITY_OPTIONS.includes(parsed.clarity)
+                      ? parsed.clarity
+                      : ADDRESS_CLARITY_OPTIONS[0],
+                  addressLandmarks: parsed.landmarks || "",
+                  addressDirections: parsed.directions || "",
+                });
 
-                if (hasAddress) {
-                  setAddressForm({
-                    residentialAddress: parsed.address || "",
-                    addressClarity:
-                      parsed.clarity &&
-                      ADDRESS_CLARITY_OPTIONS.includes(parsed.clarity)
-                        ? parsed.clarity
-                        : ADDRESS_CLARITY_OPTIONS[0],
-                    addressLandmarks: parsed.landmarks || "",
-                    addressDirections: parsed.directions || "",
-                  });
-                  setAddressSubmitted(true);
-
-                  if (typeof parsed.match_score === "number") {
-                    setAddressMatchScore(parsed.match_score);
-                  }
+                if (typeof parsed.match_score === "number") {
+                  setAddressMatchScore(parsed.match_score);
                 }
+
+                setAddressHydrated(true);
               }
             } catch (parseError) {
               console.warn("Unable to parse stored address claim", parseError);
             }
+          }
+
+          if (typeof data.address_match_score === "number") {
+            setAddressMatchScore(data.address_match_score);
           }
 
           console.log("Restored verification progress:", {
@@ -212,6 +253,34 @@ const FacialVerification = () => {
 
     loadExistingRequest();
   }, [user]);
+
+  useEffect(() => {
+    if (!profile || addressHydrated) return;
+
+    if (
+      !profile.residential_address &&
+      !profile.address_landmarks &&
+      !profile.address_directions
+    ) {
+      return;
+    }
+
+    setAddressForm((prev) => ({
+      residentialAddress:
+        prev.residentialAddress || profile.residential_address || "",
+      addressClarity:
+        profile.address_clarity &&
+        ADDRESS_CLARITY_OPTIONS.includes(profile.address_clarity)
+          ? profile.address_clarity
+          : prev.addressClarity,
+      addressLandmarks:
+        prev.addressLandmarks || profile.address_landmarks || "",
+      addressDirections:
+        prev.addressDirections || profile.address_directions || "",
+    }));
+
+    setAddressHydrated(true);
+  }, [profile, addressHydrated]);
 
   const persistVerificationRequest = async (
     payload: Record<string, unknown>
@@ -374,8 +443,22 @@ const FacialVerification = () => {
         })
         .eq("id", user.id);
 
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              residential_address: addressForm.residentialAddress.trim(),
+              address_clarity: addressForm.addressClarity,
+              address_landmarks: addressForm.addressLandmarks.trim(),
+              address_directions: addressForm.addressDirections.trim(),
+              verification_status: "pending",
+            }
+          : prev
+      );
+
       setAddressMatchScore(matchScore);
       setAddressSubmitted(true);
+      setAddressHydrated(true);
       setSyncIssue(null);
       toast.success(
         `Saved! Your address now carries a ${matchScore}% match confidence for validators.`
@@ -405,7 +488,6 @@ const FacialVerification = () => {
     setSavingRecords(true);
     try {
       await persistVerificationRequest({
-        status: "draft",
         nin_bvn: JSON.stringify({
           nin: profile.nin,
           bvn: profile.bvn,
@@ -432,6 +514,332 @@ const FacialVerification = () => {
     } finally {
       setSavingRecords(false);
     }
+  };
+
+  const renderStageContent = () => {
+    if (activeStage === "records") {
+      return (
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-primary uppercase tracking-[0.3em]">
+              Step 1 · Confirm retrieved records
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              We pulled your enrollment data using the NIN/BVN provided during
+              registration. Please confirm these details before we initiate AI
+              facial verification.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-dashed border-primary/30 bg-primary/5 p-4">
+            {profileLoading ? (
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                Retrieving your NIN/BVN record...
+              </div>
+            ) : fetchError ? (
+              <p className="text-sm text-destructive">{fetchError}</p>
+            ) : profile ? (
+              <dl className="grid gap-3 text-sm md:grid-cols-2">
+                <div>
+                  <dt className="text-muted-foreground">Full name</dt>
+                  <dd className="font-semibold text-foreground">
+                    {[profile.first_name, profile.last_name]
+                      .filter(Boolean)
+                      .join(" ") || "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">NIN</dt>
+                  <dd className="font-mono text-base">
+                    {profile.nin || "Not provided"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">BVN</dt>
+                  <dd className="font-mono text-base">
+                    {profile.bvn || "Not provided"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Residential address</dt>
+                  <dd className="text-foreground">
+                    {profile.residential_address || "Not provided"}
+                  </dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No profile data found.
+              </p>
+            )}
+          </div>
+
+          <Button
+            onClick={confirmRecords}
+            disabled={
+              profileLoading || !profile?.nin || !profile?.bvn || savingRecords
+            }
+            className="w-full"
+            size="lg"
+          >
+            {savingRecords ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving confirmation...
+              </>
+            ) : hasConfirmedRecords ? (
+              "Reconfirm records"
+            ) : (
+              "Confirm records & continue"
+            )}
+          </Button>
+          {!profileLoading && (!profile?.nin || !profile?.bvn) && (
+            <p className="text-xs text-destructive text-center">
+              Provide both NIN and BVN in your profile to continue.
+            </p>
+          )}
+        </div>
+      );
+    }
+
+    if (activeStage === "facial") {
+      if (!hasConfirmedRecords) {
+        return (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-semibold">Finish Step 1 first</p>
+            <p>
+              Confirm your NIN/BVN records before running the AI liveness check.
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <>
+          <div>
+            <p className="text-sm font-semibold text-primary uppercase tracking-[0.3em]">
+              Step 2 · AI facial verification
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Keep steady while we run biometric liveness checks and match
+              against your national ID photo.
+            </p>
+          </div>
+          <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
+            {isProcessing ? (
+              <div className="text-center space-y-4">
+                <Loader2 className="w-12 h-12 animate-spin text-primary mx-auto" />
+                <p className="text-sm text-muted-foreground">
+                  Processing liveness check...
+                </p>
+              </div>
+            ) : (
+              <div className="text-center space-y-4 p-6">
+                <Camera className="w-16 h-16 text-muted-foreground mx-auto" />
+                <div>
+                  <p className="font-medium">Camera Preview</p>
+                  <p className="text-sm text-muted-foreground">
+                    Position your face in the center of the frame
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <h3 className="font-semibold">Instructions:</h3>
+            <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+              <li>Ensure you're in a well-lit area</li>
+              <li>Look directly at the camera</li>
+              <li>Follow the on-screen prompts during verification</li>
+              <li>Keep your face within the frame</li>
+            </ul>
+          </div>
+
+          <Button
+            onClick={startVerification}
+            disabled={isProcessing}
+            className="w-full"
+            size="lg"
+          >
+            {isProcessing ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Processing...
+              </>
+            ) : (
+              <>
+                <Camera className="mr-2 h-4 w-4" />
+                Start Liveness Check
+              </>
+            )}
+          </Button>
+        </>
+      );
+    }
+
+    if (activeStage === "address") {
+      if (!hasConfirmedRecords || !aiComplete) {
+        return (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-semibold">Finish earlier steps first</p>
+            <p>
+              Confirm your records and complete the liveness check before
+              submitting address directions.
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="space-y-5">
+          <div>
+            <p className="text-sm font-semibold text-primary uppercase tracking-[0.3em]">
+              Step 3 · Describe your address
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Give validators African-context directions. We'll match it with
+              the NIN/BVN address above to add to your trust score.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-dashed border-primary/30 bg-primary/5 p-4 text-sm">
+            <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
+              NIN/BVN address on file
+            </p>
+            <p className="mt-1 text-foreground">
+              {profile?.residential_address ||
+                "No record provided. Be extra descriptive so validators can find you fast."}
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="address-claim">Residential address</Label>
+              <Textarea
+                id="address-claim"
+                placeholder="House 14, Oluwaseyi Close, off Adetola Street, Surulere, Lagos"
+                value={addressForm.residentialAddress}
+                onChange={(e) =>
+                  setAddressForm({
+                    ...addressForm,
+                    residentialAddress: e.target.value,
+                  })
+                }
+                rows={3}
+                disabled={savingAddress}
+              />
+              <p className="text-xs text-muted-foreground">
+                Describe the place the way neighbors or riders would.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Address clarity</Label>
+              <Select
+                value={addressForm.addressClarity}
+                onValueChange={(value) =>
+                  setAddressForm({
+                    ...addressForm,
+                    addressClarity: value,
+                  })
+                }
+                disabled={savingAddress}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select address type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {ADDRESS_CLARITY_OPTIONS.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="address-landmarks">Nearby landmarks</Label>
+              <Textarea
+                id="address-landmarks"
+                placeholder="Two houses after Mama Nkechi canteen, opposite the community borehole"
+                value={addressForm.addressLandmarks}
+                onChange={(e) =>
+                  setAddressForm({
+                    ...addressForm,
+                    addressLandmarks: e.target.value,
+                  })
+                }
+                rows={2}
+                disabled={savingAddress}
+              />
+              <p className="text-xs text-muted-foreground">
+                Mention landmarks boda/okada riders commonly reference.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="address-directions">Simple directions</Label>
+              <Textarea
+                id="address-directions"
+                placeholder="From Ugborikoko junction, take the sandy road by the mosque, second blue gate on the left"
+                value={addressForm.addressDirections}
+                onChange={(e) =>
+                  setAddressForm({
+                    ...addressForm,
+                    addressDirections: e.target.value,
+                  })
+                }
+                rows={2}
+                disabled={savingAddress}
+              />
+              <p className="text-xs text-muted-foreground">
+                Keep it in plain language so validators can verify quickly.
+              </p>
+            </div>
+          </div>
+
+          <Button
+            onClick={handleAddressSubmit}
+            disabled={savingAddress}
+            className="w-full"
+            size="lg"
+          >
+            {savingAddress ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving address claim...
+              </>
+            ) : (
+              "Save address directions"
+            )}
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="text-center space-y-6">
+        <div className="p-6 bg-green-50 dark:bg-green-900/20 rounded-lg">
+          <CheckCircle className="w-12 h-12 text-green-600 dark:text-green-400 mx-auto mb-4" />
+          <p className="text-green-800 dark:text-green-200 font-medium">
+            Verification package shared!
+          </p>
+          <p className="text-sm text-green-600 dark:text-green-300 mt-2">
+            Validators received your AI scores and address directions
+            {addressMatchScore !== null
+              ? ` — ${addressMatchScore}% match confidence.`
+              : "."}
+          </p>
+        </div>
+
+        <Button onClick={completeOnboarding} className="w-full" size="lg">
+          Continue to Dashboard
+        </Button>
+      </div>
+    );
   };
 
   return (
@@ -468,25 +876,25 @@ const FacialVerification = () => {
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-sm font-semibold text-foreground">
-                    {stageCopy[currentStage].title}
+                    {stageCopy[activeStage].title}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {stageCopy[currentStage].hint}
+                    {stageCopy[activeStage].hint}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
                   {stageOrder.map((stage, idx) => {
-                    const stageIndex = stageOrder.indexOf(currentStage);
-                    const isComplete = idx < stageIndex;
-                    const isActive = idx === stageIndex;
+                    const isComplete = idx < derivedIndex;
+                    const isActive = idx === activeIndex;
 
                     return (
                       <div
                         key={stage}
                         className={cn(
-                          "h-2 w-12 rounded-full bg-border",
+                          "h-2 w-12 rounded-full bg-border transition-colors",
                           isComplete && "bg-primary",
-                          isActive && "bg-primary/70"
+                          isActive && !isComplete && "bg-primary/70",
+                          isActive && "ring-2 ring-primary/60"
                         )}
                         aria-label={`Step ${idx + 1}: ${
                           stageCopy[stage].title
@@ -498,308 +906,24 @@ const FacialVerification = () => {
               </div>
             </div>
 
-            {!addressSubmitted ? (
-              !hasConfirmedRecords ? (
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-sm font-semibold text-primary uppercase tracking-[0.3em]">
-                      Step 1 · Confirm retrieved records
-                    </p>
-                    <p className="text-sm text-muted-foreground mt-2">
-                      We pulled your enrollment data using the NIN/BVN provided
-                      during registration. Please confirm these details before
-                      we initiate AI facial verification.
-                    </p>
-                  </div>
+            {renderStageContent()}
 
-                  <div className="rounded-2xl border border-dashed border-primary/30 bg-primary/5 p-4">
-                    {profileLoading ? (
-                      <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                        Retrieving your NIN/BVN record...
-                      </div>
-                    ) : fetchError ? (
-                      <p className="text-sm text-destructive">{fetchError}</p>
-                    ) : profile ? (
-                      <dl className="grid gap-3 text-sm md:grid-cols-2">
-                        <div>
-                          <dt className="text-muted-foreground">Full name</dt>
-                          <dd className="font-semibold text-foreground">
-                            {[profile.first_name, profile.last_name]
-                              .filter(Boolean)
-                              .join(" ") || "—"}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">NIN</dt>
-                          <dd className="font-mono text-base">
-                            {profile.nin || "Not provided"}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">BVN</dt>
-                          <dd className="font-mono text-base">
-                            {profile.bvn || "Not provided"}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-muted-foreground">
-                            Residential address
-                          </dt>
-                          <dd className="text-foreground">
-                            {profile.residential_address || "Not provided"}
-                          </dd>
-                        </div>
-                      </dl>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">
-                        No profile data found.
-                      </p>
-                    )}
-                  </div>
-
-                  <Button
-                    onClick={confirmRecords}
-                    disabled={
-                      profileLoading ||
-                      !profile?.nin ||
-                      !profile?.bvn ||
-                      savingRecords
-                    }
-                    className="w-full"
-                    size="lg"
-                  >
-                    {savingRecords ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Saving confirmation...
-                      </>
-                    ) : (
-                      "Confirm records & continue"
-                    )}
-                  </Button>
-                  {!profileLoading && (!profile?.nin || !profile?.bvn) && (
-                    <p className="text-xs text-destructive text-center">
-                      Provide both NIN and BVN in your profile to continue.
-                    </p>
-                  )}
-                </div>
-              ) : !aiComplete ? (
-                <>
-                  <div>
-                    <p className="text-sm font-semibold text-primary uppercase tracking-[0.3em]">
-                      Step 2 · AI facial verification
-                    </p>
-                    <p className="text-sm text-muted-foreground mt-2">
-                      Keep steady while we run biometric liveness checks and
-                      match against your national ID photo.
-                    </p>
-                  </div>
-                  <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
-                    {isProcessing ? (
-                      <div className="text-center space-y-4">
-                        <Loader2 className="w-12 h-12 animate-spin text-primary mx-auto" />
-                        <p className="text-sm text-muted-foreground">
-                          Processing liveness check...
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="text-center space-y-4 p-6">
-                        <Camera className="w-16 h-16 text-muted-foreground mx-auto" />
-                        <div>
-                          <p className="font-medium">Camera Preview</p>
-                          <p className="text-sm text-muted-foreground">
-                            Position your face in the center of the frame
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <h3 className="font-semibold">Instructions:</h3>
-                    <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
-                      <li>Ensure you're in a well-lit area</li>
-                      <li>Look directly at the camera</li>
-                      <li>Follow the on-screen prompts during verification</li>
-                      <li>Keep your face within the frame</li>
-                    </ul>
-                  </div>
-
-                  <Button
-                    onClick={startVerification}
-                    disabled={isProcessing}
-                    className="w-full"
-                    size="lg"
-                  >
-                    {isProcessing ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Processing...
-                      </>
-                    ) : (
-                      <>
-                        <Camera className="mr-2 h-4 w-4" />
-                        Start Liveness Check
-                      </>
-                    )}
-                  </Button>
-                </>
-              ) : (
-                <div className="space-y-5">
-                  <div>
-                    <p className="text-sm font-semibold text-primary uppercase tracking-[0.3em]">
-                      Step 3 · Describe your address
-                    </p>
-                    <p className="text-sm text-muted-foreground mt-2">
-                      Give validators African-context directions. We'll match it
-                      with the NIN/BVN address above to add to your trust score.
-                    </p>
-                  </div>
-
-                  <div className="rounded-2xl border border-dashed border-primary/30 bg-primary/5 p-4 text-sm">
-                    <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
-                      NIN/BVN address on file
-                    </p>
-                    <p className="mt-1 text-foreground">
-                      {profile?.residential_address ||
-                        "No record provided. Be extra descriptive so validators can find you fast."}
-                    </p>
-                  </div>
-
-                  <div className="space-y-3">
-                    <div className="space-y-2">
-                      <Label htmlFor="address-claim">Residential address</Label>
-                      <Textarea
-                        id="address-claim"
-                        placeholder="House 14, Oluwaseyi Close, off Adetola Street, Surulere, Lagos"
-                        value={addressForm.residentialAddress}
-                        onChange={(e) =>
-                          setAddressForm({
-                            ...addressForm,
-                            residentialAddress: e.target.value,
-                          })
-                        }
-                        rows={3}
-                        disabled={savingAddress}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Describe the place the way neighbors or riders would.
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label>Address clarity</Label>
-                      <Select
-                        value={addressForm.addressClarity}
-                        onValueChange={(value) =>
-                          setAddressForm({
-                            ...addressForm,
-                            addressClarity: value,
-                          })
-                        }
-                        disabled={savingAddress}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select address type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ADDRESS_CLARITY_OPTIONS.map((option) => (
-                            <SelectItem key={option} value={option}>
-                              {option}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="address-landmarks">
-                        Nearby landmarks
-                      </Label>
-                      <Textarea
-                        id="address-landmarks"
-                        placeholder="Two houses after Mama Nkechi canteen, opposite the community borehole"
-                        value={addressForm.addressLandmarks}
-                        onChange={(e) =>
-                          setAddressForm({
-                            ...addressForm,
-                            addressLandmarks: e.target.value,
-                          })
-                        }
-                        rows={2}
-                        disabled={savingAddress}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Mention landmarks boda/okada riders commonly reference.
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="address-directions">
-                        Simple directions
-                      </Label>
-                      <Textarea
-                        id="address-directions"
-                        placeholder="From Ugborikoko junction, take the sandy road by the mosque, second blue gate on the left"
-                        value={addressForm.addressDirections}
-                        onChange={(e) =>
-                          setAddressForm({
-                            ...addressForm,
-                            addressDirections: e.target.value,
-                          })
-                        }
-                        rows={2}
-                        disabled={savingAddress}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Keep it in plain language so validators can verify
-                        quickly.
-                      </p>
-                    </div>
-                  </div>
-
-                  <Button
-                    onClick={handleAddressSubmit}
-                    disabled={savingAddress}
-                    className="w-full"
-                    size="lg"
-                  >
-                    {savingAddress ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Saving address claim...
-                      </>
-                    ) : (
-                      "Save address directions"
-                    )}
-                  </Button>
-                </div>
-              )
-            ) : (
-              <div className="text-center space-y-6">
-                <div className="p-6 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                  <CheckCircle className="w-12 h-12 text-green-600 dark:text-green-400 mx-auto mb-4" />
-                  <p className="text-green-800 dark:text-green-200 font-medium">
-                    Verification package shared!
-                  </p>
-                  <p className="text-sm text-green-600 dark:text-green-300 mt-2">
-                    Validators received your AI scores and address directions
-                    {addressMatchScore !== null
-                      ? ` — ${addressMatchScore}% match confidence.`
-                      : "."}
-                  </p>
-                </div>
-
-                <Button
-                  onClick={completeOnboarding}
-                  className="w-full"
-                  size="lg"
-                >
-                  Continue to Dashboard
-                </Button>
-              </div>
-            )}
+            <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:justify-between">
+              <Button
+                variant="outline"
+                onClick={goToPrevStage}
+                disabled={!canGoPrev}
+              >
+                Previous step
+              </Button>
+              <Button
+                variant="outline"
+                onClick={goToNextStage}
+                disabled={!canGoNext}
+              >
+                Preview next step
+              </Button>
+            </div>
 
             <div className="space-y-3">
               {syncIssue && (
@@ -827,7 +951,7 @@ const FacialVerification = () => {
                 <div>
                   <p className="font-semibold">Need help?</p>
                   <p>
-                    You're on step {stageOrder.indexOf(currentStage) + 1} of{" "}
+                    You're on step {stageOrder.indexOf(derivedStage) + 1} of{" "}
                     {stageOrder.length}. If anything looks wrong with your
                     records or the camera setup, email
                     <a

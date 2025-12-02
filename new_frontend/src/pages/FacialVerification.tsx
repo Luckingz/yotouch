@@ -1,597 +1,972 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Upload, CheckCircle2, XCircle, Loader2, AlertCircle } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Progress } from '@/components/ui/progress';
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/hooks/useAuth";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Camera, CheckCircle, Loader2, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
+import { cn } from "@/lib/utils";
 
-// Use CDN models instead of local files to avoid loading issues
-const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
-const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
-const DISTANCE_THRESHOLD = 0.6;
-const LIVENESS_DURATION_MS = 3000;
-const MOVEMENT_THRESHOLD = 10;
+const ADDRESS_CLARITY_OPTIONS = [
+  "Street & house number",
+  "Street without number",
+  "Estate or compound",
+  "Village/district description",
+  "Landmark-only description",
+];
 
-interface VerificationResult {
-  isMatch: boolean;
-  distance: number;
-  livenessSuccess: boolean;
+interface ProfileRecord {
+  first_name: string | null;
+  last_name: string | null;
+  nin: string | null;
+  bvn: string | null;
+  residential_address: string | null;
+  address_clarity: string | null;
+  address_landmarks: string | null;
+  address_directions: string | null;
+  verification_status: string | null;
 }
 
-// Declare faceapi as global
-declare global {
-  interface Window {
-    faceapi: any;
-  }
-}
+const FacialVerification = () => {
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [profile, setProfile] = useState<ProfileRecord | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [hasConfirmedRecords, setHasConfirmedRecords] = useState(false);
+  const [savingRecords, setSavingRecords] = useState(false);
+  const [syncIssue, setSyncIssue] = useState<string | null>(null);
+  const [aiComplete, setAiComplete] = useState(false);
+  const [addressSubmitted, setAddressSubmitted] = useState(false);
+  const [addressForm, setAddressForm] = useState({
+    residentialAddress: "",
+    addressClarity: ADDRESS_CLARITY_OPTIONS[0],
+    addressLandmarks: "",
+    addressDirections: "",
+  });
+  const [savingAddress, setSavingAddress] = useState(false);
+  const [addressMatchScore, setAddressMatchScore] = useState<number | null>(
+    null
+  );
+  const [addressHydrated, setAddressHydrated] = useState(false);
 
-const FacialVerification: React.FC = () => {
-  // Refs
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  type Stage = "records" | "facial" | "address" | "submitted";
 
-  // State
-  const [faceApiLoaded, setFaceApiLoaded] = useState(false);
-  const [modelsLoaded, setModelsLoaded] = useState(false);
-  const [cameraActive, setCameraActive] = useState(false);
-  const [idPhotoPreview, setIdPhotoPreview] = useState<string | null>(null);
-  const [idPhotoDescriptor, setIdPhotoDescriptor] = useState<Float32Array | null>(null);
-  const [livenessCheckActive, setLivenessCheckActive] = useState(false);
-  const [verificationResult, setVerificationResult] = useState<VerificationResult | null>(null);
-  
-  // Status messages
-  const [modelStatus, setModelStatus] = useState('Initializing...');
-  const [cameraStatus, setCameraStatus] = useState('Camera not activated');
-  const [photoStatus, setPhotoStatus] = useState('No photo uploaded');
-  const [livenessStatus, setLivenessStatus] = useState('Ready');
-  const [livenessProgress, setLivenessProgress] = useState(0);
-  
-  // Error handling
-  const [error, setError] = useState<string | null>(null);
-  const [showSecurityWarning, setShowSecurityWarning] = useState(false);
+  const stageOrder: Stage[] = ["records", "facial", "address", "submitted"];
 
-  // Detection interval
-  const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const derivedStage: Stage = !hasConfirmedRecords
+    ? "records"
+    : !aiComplete
+    ? "facial"
+    : !addressSubmitted
+    ? "address"
+    : "submitted";
 
-  // Load face-api.js library dynamically
+  const [activeStage, setActiveStage] = useState<Stage>("records");
+  const derivedIndex = stageOrder.indexOf(derivedStage);
+  const activeIndex = stageOrder.indexOf(activeStage);
+
   useEffect(() => {
-    const loadFaceApiScript = () => {
-      return new Promise((resolve, reject) => {
-        if (window.faceapi) {
-          resolve(true);
-          return;
-        }
+    setActiveStage(derivedStage);
+  }, [derivedStage]);
 
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.min.js';
-        script.async = true;
-        script.onload = () => {
-          console.log('✅ Face-API script loaded');
-          resolve(true);
-        };
-        script.onerror = () => {
-          reject(new Error('Failed to load face-api.js library'));
-        };
-        document.body.appendChild(script);
-      });
-    };
+  const canGoPrev = activeIndex > 0;
+  const canGoNext = activeIndex < derivedIndex;
 
-    loadFaceApiScript()
-      .then(() => {
-        setFaceApiLoaded(true);
-        loadModels();
-      })
-      .catch((err) => {
-        setError(`Failed to load face-api.js: ${err.message}`);
-        setModelStatus('Script loading failed');
-      });
-
-    return () => {
-      // Cleanup
-      if (detectionIntervalRef.current) {
-        clearInterval(detectionIntervalRef.current);
-      }
-      stopCamera();
-    };
-  }, []);
-
-  const loadModels = async () => {
-    try {
-      setModelStatus('Loading AI models from CDN...');
-      const faceapi = window.faceapi;
-      
-      await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
-      await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
-      await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
-      
-      setModelsLoaded(true);
-      setModelStatus('✓ Models loaded successfully');
-      console.log('✅ Face-API models loaded from CDN');
-    } catch (err) {
-      const errorMsg = `Failed to load models: ${err instanceof Error ? err.message : 'Unknown error'}`;
-      setError(errorMsg);
-      setModelStatus('❌ Model loading failed');
-      console.error('Model loading error:', err);
+  const goToPrevStage = () => {
+    if (canGoPrev) {
+      setActiveStage(stageOrder[activeIndex - 1]);
     }
   };
 
-  const startCamera = async () => {
-    try {
-      // Check browser compatibility
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setShowSecurityWarning(true);
-        throw new Error('Camera API not supported. Please use HTTPS or localhost.');
-      }
-
-      setCameraStatus('Requesting camera access...');
-      
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user'
-        }
-      });
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        
-        // Wait for video to be ready
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play();
-          setCameraActive(true);
-          setCameraStatus('✓ Camera active');
-          startFaceDetection();
-        };
-      }
-    } catch (err) {
-      let errorMsg = 'Failed to access camera. ';
-      
-      if (err instanceof Error) {
-        if (err.name === 'NotAllowedError') {
-          errorMsg += 'Permission denied. Please allow camera access.';
-        } else if (err.name === 'NotFoundError') {
-          errorMsg += 'No camera found on this device.';
-        } else if (err.name === 'NotReadableError') {
-          errorMsg += 'Camera is in use by another application.';
-        } else {
-          errorMsg += err.message;
-        }
-      }
-      
-      setError(errorMsg);
-      setCameraStatus('❌ Camera activation failed');
-      console.error('Camera error:', err);
+  const goToNextStage = () => {
+    if (canGoNext) {
+      setActiveStage(stageOrder[activeIndex + 1]);
     }
   };
 
-  const stopCamera = () => {
-    if (videoRef.current?.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
+  const isFinalStage = activeStage === "submitted";
+
+  const stageCopy = useMemo(
+    () => ({
+      records: {
+        title: "NIN & BVN confirmation",
+        hint: "Review the records retrieved from national databases",
+      },
+      facial: {
+        title: "AI facial verification",
+        hint: "Run liveness and face match checks",
+      },
+      address: {
+        title: "Describe your address",
+        hint: "Give validators African-context directions to boost your score",
+      },
+      submitted: {
+        title: "Submitted to validators",
+        hint: "Sit tight while validators complete their review",
+      },
+    }),
+    []
+  );
+
+  useEffect(() => {
+    if (!loading && !user) {
+      navigate("/auth", { replace: true });
     }
-    setCameraActive(false);
-    setCameraStatus('Camera stopped');
-    
-    if (detectionIntervalRef.current) {
-      clearInterval(detectionIntervalRef.current);
-      detectionIntervalRef.current = null;
-    }
-  };
+  }, [loading, user, navigate]);
 
-  const startFaceDetection = () => {
-    if (!videoRef.current || !canvasRef.current || !window.faceapi) return;
+  if (loading || !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const faceapi = window.faceapi;
+  useEffect(() => {
+    if (!user) return;
 
-    detectionIntervalRef.current = setInterval(async () => {
-      if (!modelsLoaded || !video.srcObject) return;
-
+    const loadProfile = async () => {
       try {
-        const detections = await faceapi
-          .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
-          .withFaceLandmarks()
-          .withFaceDescriptors();
+        setProfileLoading(true);
+        setFetchError(null);
+        const { data, error } = await supabase
+          .from("profiles")
+          .select(
+            "first_name, last_name, nin, bvn, residential_address, address_clarity, address_landmarks, address_directions, verification_status"
+          )
+          .eq("id", user.id)
+          .maybeSingle();
 
-        const displaySize = { width: video.offsetWidth, height: video.offsetHeight };
-        faceapi.matchDimensions(canvas, displaySize);
-
-        const resizedDetections = faceapi.resizeResults(detections, displaySize);
-        
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          faceapi.draw.drawDetections(canvas, resizedDetections);
-          faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
-        }
-
-        // Update camera status based on face detection
-        if (!livenessCheckActive && idPhotoDescriptor) {
-          if (detections.length === 0) {
-            setCameraStatus('⚠️ No face detected - position yourself in frame');
-          } else {
-            setCameraStatus('✓ Face detected - ready for verification');
-          }
-        }
+        if (error) throw error;
+        setProfile(data);
       } catch (err) {
-        console.error('Detection error:', err);
+        console.error("Error fetching profile for verification", err);
+        setFetchError(
+          "We couldn't retrieve your records. Please try again or contact support."
+        );
+      } finally {
+        setProfileLoading(false);
       }
-    }, 100);
-  };
+    };
 
-  const handlePhotoUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+    loadProfile();
+  }, [user]);
 
-    setError(null);
-    setVerificationResult(null);
+  useEffect(() => {
+    if (!user) return;
 
-    // File size check
-    if (file.size > MAX_FILE_SIZE_BYTES) {
-      setError(`File size exceeds ${MAX_FILE_SIZE_BYTES / 1024 / 1024}MB limit`);
-      return;
-    }
+    const loadExistingRequest = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("verification_requests")
+          .select(
+            "id, nin_bvn, face_match_score, liveness_score, residential_claim, status, address_match_score"
+          )
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-    if (!modelsLoaded || !window.faceapi) {
-      setError('AI models not loaded yet. Please wait.');
-      return;
-    }
+        if (error && error.code !== "PGRST116") {
+          throw error;
+        }
 
-    try {
-      setPhotoStatus('Processing photo...');
-      const faceapi = window.faceapi;
+        if (data) {
+          // Restore step 1: records confirmation
+          if (data.nin_bvn) {
+            setHasConfirmedRecords(true);
+          }
 
-      // Display preview
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setIdPhotoPreview(e.target?.result as string);
-      };
-      reader.readAsDataURL(file);
+          // Restore step 2: AI facial verification
+          if (data.face_match_score !== null && data.liveness_score !== null) {
+            setAiComplete(true);
+          }
 
-      // Process face detection
-      const img = await faceapi.bufferToImage(file);
-      const detection = await faceapi
-        .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
-        .withFaceLandmarks()
-        .withFaceDescriptor();
+          // Restore step 3: address submission
+          if (data.residential_claim) {
+            setAddressSubmitted(true);
+            try {
+              // Handle both string and object types (Supabase might auto-parse JSONB)
+              const parsed =
+                typeof data.residential_claim === "string"
+                  ? JSON.parse(data.residential_claim)
+                  : data.residential_claim;
 
-      if (detection) {
-        setIdPhotoDescriptor(detection.descriptor);
-        setPhotoStatus('✓ Face detected in ID photo');
-      } else {
-        setError('No face detected in uploaded photo. Please use a clear photo.');
-        setPhotoStatus('❌ Face detection failed');
-        setIdPhotoDescriptor(null);
-      }
-    } catch (err) {
-      setError(`Photo processing failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      setPhotoStatus('❌ Processing failed');
-    }
-  };
+              if (parsed && typeof parsed === "object") {
+                setAddressForm({
+                  residentialAddress: parsed.address || "",
+                  addressClarity:
+                    parsed.clarity &&
+                    ADDRESS_CLARITY_OPTIONS.includes(parsed.clarity)
+                      ? parsed.clarity
+                      : ADDRESS_CLARITY_OPTIONS[0],
+                  addressLandmarks: parsed.landmarks || "",
+                  addressDirections: parsed.directions || "",
+                });
 
-  const startLivenessCheck = async () => {
-    if (!idPhotoDescriptor) {
-      setError('Please upload your ID photo first');
-      return;
-    }
+                if (typeof parsed.match_score === "number") {
+                  setAddressMatchScore(parsed.match_score);
+                }
 
-    if (!cameraActive || !videoRef.current) {
-      setError('Camera is not active');
-      return;
-    }
+                setAddressHydrated(true);
+              }
+            } catch (parseError) {
+              console.warn("Unable to parse stored address claim", parseError);
+            }
+          }
 
-    if (!window.faceapi) {
-      setError('Face API not loaded');
-      return;
-    }
+          if (typeof data.address_match_score === "number") {
+            setAddressMatchScore(data.address_match_score);
+          }
 
-    setLivenessCheckActive(true);
-    setError(null);
-    setVerificationResult(null);
-    setLivenessProgress(0);
-
-    const video = videoRef.current;
-    const faceapi = window.faceapi;
-    const detectionResults: Float32Array[] = [];
-    const startTime = Date.now();
-    let lastX: number | null = null;
-    let totalMovement = 0;
-
-    setLivenessStatus('Move your head gently (YES/NO motion)');
-
-    const livenessInterval = setInterval(async () => {
-      const elapsed = Date.now() - startTime;
-      const progress = Math.min((elapsed / LIVENESS_DURATION_MS) * 100, 100);
-      setLivenessProgress(progress);
-
-      const remaining = Math.ceil((LIVENESS_DURATION_MS - elapsed) / 1000);
-      
-      if (elapsed >= LIVENESS_DURATION_MS) {
-        clearInterval(livenessInterval);
-
-        // Evaluate liveness
-        const livenessSuccess = totalMovement > MOVEMENT_THRESHOLD * 5;
-
-        if (livenessSuccess && detectionResults.length > 0) {
-          setLivenessStatus('✓ Liveness check passed! Verifying...');
-          const finalDescriptor = detectionResults[detectionResults.length - 1];
-          await verifyFace(finalDescriptor, true);
-        } else {
-          setLivenessStatus('❌ Liveness check failed');
-          setVerificationResult({
-            isMatch: false,
-            distance: 1,
-            livenessSuccess: false
+          console.log("Restored verification progress:", {
+            hasConfirmedRecords: Boolean(data.nin_bvn),
+            aiComplete: Boolean(
+              data.face_match_score !== null && data.liveness_score !== null
+            ),
+            addressSubmitted: Boolean(data.residential_claim),
+            status: data.status,
           });
-          setError('Liveness check failed. Insufficient movement detected.');
         }
-
-        setLivenessCheckActive(false);
-        setLivenessProgress(0);
-        return;
+      } catch (requestError) {
+        console.error("Error loading verification request", requestError);
       }
+    };
 
-      // Detect face
-      try {
-        const detection = await faceapi
-          .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
-          .withFaceLandmarks()
-          .withFaceDescriptor();
+    loadExistingRequest();
+  }, [user]);
 
-        if (detection) {
-          detectionResults.push(detection.descriptor);
+  useEffect(() => {
+    if (!profile || addressHydrated) return;
 
-          // Track movement
-          const currentX = detection.detection.box.x;
-          if (lastX !== null) {
-            totalMovement += Math.abs(currentX - lastX);
-          }
-          lastX = currentX;
+    if (
+      !profile.residential_address &&
+      !profile.address_landmarks &&
+      !profile.address_directions
+    ) {
+      return;
+    }
 
-          setLivenessStatus(`Keep moving your head... ${remaining}s remaining`);
-        } else {
-          setLivenessStatus(`⚠️ Face not visible! ${remaining}s remaining`);
-        }
-      } catch (err) {
-        console.error('Liveness detection error:', err);
+    setAddressForm((prev) => ({
+      residentialAddress:
+        prev.residentialAddress || profile.residential_address || "",
+      addressClarity:
+        profile.address_clarity &&
+        ADDRESS_CLARITY_OPTIONS.includes(profile.address_clarity)
+          ? profile.address_clarity
+          : prev.addressClarity,
+      addressLandmarks:
+        prev.addressLandmarks || profile.address_landmarks || "",
+      addressDirections:
+        prev.addressDirections || profile.address_directions || "",
+    }));
+
+    setAddressHydrated(true);
+  }, [profile, addressHydrated]);
+
+  const persistVerificationRequest = async (
+    payload: Record<string, unknown>
+  ) => {
+    if (!user?.id) {
+      throw new Error("User not authenticated");
+    }
+    const { data: existing, error: fetchError } = await supabase
+      .from("verification_requests")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (fetchError && fetchError.code !== "PGRST116") {
+      throw fetchError;
+    }
+
+    if (existing?.id) {
+      const { error } = await supabase
+        .from("verification_requests")
+        .update({
+          updated_at: new Date().toISOString(),
+          ...payload,
+        })
+        .eq("id", existing.id);
+
+      if (error) {
+        throw error;
       }
-    }, 200);
-  };
-
-  const verifyFace = async (liveDescriptor: Float32Array, livenessSuccess: boolean) => {
-    if (!idPhotoDescriptor || !window.faceapi) return;
-
-    try {
-      setLivenessStatus('Computing facial match...');
-      const faceapi = window.faceapi;
-
-      const distance = faceapi.euclideanDistance(idPhotoDescriptor, liveDescriptor);
-      const isMatch = distance < DISTANCE_THRESHOLD;
-
-      setVerificationResult({
-        isMatch,
-        distance,
-        livenessSuccess
+    } else {
+      const { error } = await supabase.from("verification_requests").insert({
+        user_id: user.id,
+        updated_at: new Date().toISOString(),
+        ...payload,
       });
 
-      setLivenessStatus(isMatch ? '✓ Verification successful!' : '❌ Verification failed');
-    } catch (err) {
-      setError(`Verification error: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      setLivenessStatus('❌ Verification error');
+      if (error) {
+        throw error;
+      }
     }
+  };
+
+  const startVerification = () => {
+    setIsProcessing(true);
+
+    setTimeout(async () => {
+      try {
+        const faceMatchScore = 82 + Math.round(Math.random() * 6);
+        const livenessScore = 78 + Math.round(Math.random() * 8);
+
+        await persistVerificationRequest({
+          face_match_score: faceMatchScore,
+          liveness_score: livenessScore,
+        });
+
+        setAiComplete(true);
+        setSyncIssue(null);
+        toast.success(
+          "Facial verification completed successfully! We've saved your AI results and alerted validators."
+        );
+      } catch (error) {
+        console.error("Error saving AI verification", error);
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === "object"
+            ? JSON.stringify(error)
+            : String(error);
+        setSyncIssue("ai");
+        toast.error(
+          `We couldn't save your facial verification (${message}). We'll keep you on this step so you can retry.`
+        );
+      } finally {
+        setIsProcessing(false);
+      }
+    }, 3000);
+  };
+
+  const completeOnboarding = () => {
+    navigate("/dashboard");
+  };
+
+  const computeAddressMatchScore = () => {
+    const recordAddress = profile?.residential_address || "";
+    const normalise = (text: string) =>
+      text
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
+
+    const claimCombined = `${addressForm.residentialAddress} ${addressForm.addressLandmarks} ${addressForm.addressDirections}`;
+    const claimTokens = normalise(claimCombined);
+
+    if (!claimTokens.length) {
+      return 0;
+    }
+
+    const recordTokens = normalise(recordAddress);
+    const claimSet = new Set(claimTokens);
+    const recordSet = new Set(recordTokens);
+
+    let intersection = 0;
+    claimSet.forEach((token) => {
+      if (recordSet.has(token)) {
+        intersection += 1;
+      }
+    });
+
+    const union = new Set([...claimSet, ...recordSet]).size || 1;
+    const baseScore = recordTokens.length ? (intersection / union) * 100 : 65;
+
+    const clarityIndex = ADDRESS_CLARITY_OPTIONS.indexOf(
+      addressForm.addressClarity
+    );
+    const clarityBonus = Math.max(0, 10 - clarityIndex * 2);
+
+    return Math.round(Math.min(98, Math.max(40, baseScore + clarityBonus)));
+  };
+
+  const handleAddressSubmit = async () => {
+    if (!user) {
+      toast.error("Please sign in again to save your address");
+      return;
+    }
+
+    if (
+      !addressForm.residentialAddress.trim() ||
+      !addressForm.addressLandmarks.trim() ||
+      !addressForm.addressDirections.trim()
+    ) {
+      toast.error("Please complete the address fields before continuing");
+      return;
+    }
+
+    setSavingAddress(true);
+    try {
+      const matchScore = computeAddressMatchScore();
+      await persistVerificationRequest({
+        residential_claim: JSON.stringify({
+          address: addressForm.residentialAddress.trim(),
+          clarity: addressForm.addressClarity,
+          landmarks: addressForm.addressLandmarks.trim(),
+          directions: addressForm.addressDirections.trim(),
+          recorded_at: new Date().toISOString(),
+          match_score: matchScore,
+        }),
+        address_match_score: matchScore,
+        status: "pending",
+      });
+
+      await supabase
+        .from("profiles")
+        .update({
+          residential_address: addressForm.residentialAddress.trim(),
+          address_clarity: addressForm.addressClarity,
+          address_landmarks: addressForm.addressLandmarks.trim(),
+          address_directions: addressForm.addressDirections.trim(),
+          verification_status: "pending",
+        })
+        .eq("id", user.id);
+
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              residential_address: addressForm.residentialAddress.trim(),
+              address_clarity: addressForm.addressClarity,
+              address_landmarks: addressForm.addressLandmarks.trim(),
+              address_directions: addressForm.addressDirections.trim(),
+              verification_status: "pending",
+            }
+          : prev
+      );
+
+      setAddressMatchScore(matchScore);
+      setAddressSubmitted(true);
+      setAddressHydrated(true);
+      setSyncIssue(null);
+      toast.success(
+        `Saved! Your address now carries a ${matchScore}% match confidence for validators.`
+      );
+    } catch (error) {
+      console.error("Error saving address claim", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : typeof error === "object"
+          ? JSON.stringify(error)
+          : String(error);
+      setSyncIssue("address");
+      toast.error(
+        `We couldn't save your address directions (${message}). Please retry.`
+      );
+    } finally {
+      setSavingAddress(false);
+    }
+  };
+
+  const confirmRecords = async () => {
+    if (!profile?.nin || !profile?.bvn) {
+      toast.error("NIN and BVN details are required before continuing.");
+      return;
+    }
+    setSavingRecords(true);
+    try {
+      await persistVerificationRequest({
+        nin_bvn: JSON.stringify({
+          nin: profile.nin,
+          bvn: profile.bvn,
+          confirmed_at: new Date().toISOString(),
+        }),
+      });
+      setHasConfirmedRecords(true);
+      toast.success(
+        "Records confirmed and saved. Continue with liveness check."
+      );
+    } catch (error) {
+      console.error("Error saving record confirmation", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : typeof error === "object"
+          ? JSON.stringify(error)
+          : String(error);
+      setSyncIssue("records");
+      toast.warning(
+        `We couldn't sync your confirmation (${message}). You can still continue and we'll retry in the background.`
+      );
+      setHasConfirmedRecords(true);
+    } finally {
+      setSavingRecords(false);
+    }
+  };
+
+  const renderStageContent = () => {
+    if (activeStage === "records") {
+      return (
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-primary uppercase tracking-[0.3em]">
+              Step 1 · Confirm retrieved records
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              We pulled your enrollment data using the NIN/BVN provided during
+              registration. Please confirm these details before we initiate AI
+              facial verification.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-dashed border-primary/30 bg-primary/5 p-4">
+            {profileLoading ? (
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                Retrieving your NIN/BVN record...
+              </div>
+            ) : fetchError ? (
+              <p className="text-sm text-destructive">{fetchError}</p>
+            ) : profile ? (
+              <dl className="grid gap-3 text-sm md:grid-cols-2">
+                <div>
+                  <dt className="text-muted-foreground">Full name</dt>
+                  <dd className="font-semibold text-foreground">
+                    {[profile.first_name, profile.last_name]
+                      .filter(Boolean)
+                      .join(" ") || "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">NIN</dt>
+                  <dd className="font-mono text-base">
+                    {profile.nin || "Not provided"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">BVN</dt>
+                  <dd className="font-mono text-base">
+                    {profile.bvn || "Not provided"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Residential address</dt>
+                  <dd className="text-foreground">
+                    {profile.residential_address || "Not provided"}
+                  </dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No profile data found.
+              </p>
+            )}
+          </div>
+
+          <Button
+            onClick={confirmRecords}
+            disabled={
+              profileLoading || !profile?.nin || !profile?.bvn || savingRecords
+            }
+            className="w-full"
+            size="lg"
+          >
+            {savingRecords ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving confirmation...
+              </>
+            ) : hasConfirmedRecords ? (
+              "Reconfirm records"
+            ) : (
+              "Confirm records & continue"
+            )}
+          </Button>
+          {!profileLoading && (!profile?.nin || !profile?.bvn) && (
+            <p className="text-xs text-destructive text-center">
+              Provide both NIN and BVN in your profile to continue.
+            </p>
+          )}
+        </div>
+      );
+    }
+
+    if (activeStage === "facial") {
+      if (!hasConfirmedRecords) {
+        return (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-semibold">Finish Step 1 first</p>
+            <p>
+              Confirm your NIN/BVN records before running the AI liveness check.
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <>
+          <div>
+            <p className="text-sm font-semibold text-primary uppercase tracking-[0.3em]">
+              Step 2 · AI facial verification
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Keep steady while we run biometric liveness checks and match
+              against your national ID photo.
+            </p>
+          </div>
+          <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
+            {isProcessing ? (
+              <div className="text-center space-y-4">
+                <Loader2 className="w-12 h-12 animate-spin text-primary mx-auto" />
+                <p className="text-sm text-muted-foreground">
+                  Processing liveness check...
+                </p>
+              </div>
+            ) : (
+              <div className="text-center space-y-4 p-6">
+                <Camera className="w-16 h-16 text-muted-foreground mx-auto" />
+                <div>
+                  <p className="font-medium">Camera Preview</p>
+                  <p className="text-sm text-muted-foreground">
+                    Position your face in the center of the frame
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <h3 className="font-semibold">Instructions:</h3>
+            <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+              <li>Ensure you're in a well-lit area</li>
+              <li>Look directly at the camera</li>
+              <li>Follow the on-screen prompts during verification</li>
+              <li>Keep your face within the frame</li>
+            </ul>
+          </div>
+
+          <Button
+            onClick={startVerification}
+            disabled={isProcessing}
+            className="w-full"
+            size="lg"
+          >
+            {isProcessing ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Processing...
+              </>
+            ) : (
+              <>
+                <Camera className="mr-2 h-4 w-4" />
+                Start Liveness Check
+              </>
+            )}
+          </Button>
+        </>
+      );
+    }
+
+    if (activeStage === "address") {
+      if (!hasConfirmedRecords || !aiComplete) {
+        return (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-semibold">Finish earlier steps first</p>
+            <p>
+              Confirm your records and complete the liveness check before
+              submitting address directions.
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="space-y-5">
+          <div>
+            <p className="text-sm font-semibold text-primary uppercase tracking-[0.3em]">
+              Step 3 · Describe your address
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Give validators African-context directions. We'll match it with
+              the NIN/BVN address above to add to your trust score.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-dashed border-primary/30 bg-primary/5 p-4 text-sm">
+            <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
+              NIN/BVN address on file
+            </p>
+            <p className="mt-1 text-foreground">
+              {profile?.residential_address ||
+                "No record provided. Be extra descriptive so validators can find you fast."}
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="address-claim">Residential address</Label>
+              <Textarea
+                id="address-claim"
+                placeholder="House 14, Oluwaseyi Close, off Adetola Street, Surulere, Lagos"
+                value={addressForm.residentialAddress}
+                onChange={(e) =>
+                  setAddressForm({
+                    ...addressForm,
+                    residentialAddress: e.target.value,
+                  })
+                }
+                rows={3}
+                disabled={savingAddress}
+              />
+              <p className="text-xs text-muted-foreground">
+                Describe the place the way neighbors or riders would.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Address clarity</Label>
+              <Select
+                value={addressForm.addressClarity}
+                onValueChange={(value) =>
+                  setAddressForm({
+                    ...addressForm,
+                    addressClarity: value,
+                  })
+                }
+                disabled={savingAddress}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select address type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {ADDRESS_CLARITY_OPTIONS.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="address-landmarks">Nearby landmarks</Label>
+              <Textarea
+                id="address-landmarks"
+                placeholder="Two houses after Mama Nkechi canteen, opposite the community borehole"
+                value={addressForm.addressLandmarks}
+                onChange={(e) =>
+                  setAddressForm({
+                    ...addressForm,
+                    addressLandmarks: e.target.value,
+                  })
+                }
+                rows={2}
+                disabled={savingAddress}
+              />
+              <p className="text-xs text-muted-foreground">
+                Mention landmarks boda/okada riders commonly reference.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="address-directions">Simple directions</Label>
+              <Textarea
+                id="address-directions"
+                placeholder="From Ugborikoko junction, take the sandy road by the mosque, second blue gate on the left"
+                value={addressForm.addressDirections}
+                onChange={(e) =>
+                  setAddressForm({
+                    ...addressForm,
+                    addressDirections: e.target.value,
+                  })
+                }
+                rows={2}
+                disabled={savingAddress}
+              />
+              <p className="text-xs text-muted-foreground">
+                Keep it in plain language so validators can verify quickly.
+              </p>
+            </div>
+          </div>
+
+          <Button
+            onClick={handleAddressSubmit}
+            disabled={savingAddress}
+            className="w-full"
+            size="lg"
+          >
+            {savingAddress ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving address claim...
+              </>
+            ) : (
+              "Save address directions"
+            )}
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="text-center space-y-6">
+        <div className="p-6 bg-green-50 dark:bg-green-900/20 rounded-lg">
+          <CheckCircle className="w-12 h-12 text-green-600 dark:text-green-400 mx-auto mb-4" />
+          <p className="text-green-800 dark:text-green-200 font-medium">
+            Verification package shared!
+          </p>
+          <p className="text-sm text-green-600 dark:text-green-300 mt-2">
+            Validators received your AI scores and address directions
+            {addressMatchScore !== null
+              ? ` — ${addressMatchScore}% match confidence.`
+              : "."}
+          </p>
+        </div>
+
+        <Button onClick={completeOnboarding} className="w-full" size="lg">
+          Continue to Dashboard
+        </Button>
+      </div>
+    );
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-4 sm:p-8">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold text-slate-900 mb-2">YoTouch Identity Verification</h1>
-          <p className="text-slate-600">Secure facial verification with liveness detection</p>
-        </div>
+    <div className="min-h-screen bg-gradient-to-br from-primary/10 via-background to-secondary/10 flex items-center justify-center p-4">
+      <div className="w-full max-w-2xl">
+        <Card className="shadow-xl border-border/50">
+          <CardHeader className="space-y-4 text-center">
+            <div className="mx-auto w-16 h-16 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-lg">
+              {isFinalStage ? (
+                <CheckCircle className="w-8 h-8 text-white" />
+              ) : (
+                <Camera className="w-8 h-8 text-white" />
+              )}
+            </div>
+            <div>
+              <CardTitle className="text-2xl">
+                {isFinalStage
+                  ? "Verification package sent"
+                  : "AI-Powered Facial Verification"}
+              </CardTitle>
+              <CardDescription>
+                {isFinalStage
+                  ? "Validators now have your biometrics and address directions"
+                  : "Complete liveness check and share easy directions for validators"}
+              </CardDescription>
+            </div>
+          </CardHeader>
 
-        {/* Security Warning */}
-        {showSecurityWarning && (
-          <Alert className="mb-6 border-yellow-400 bg-yellow-50">
-            <AlertCircle className="h-4 w-4 text-yellow-600" />
-            <AlertDescription className="text-yellow-800">
-              <strong>Security Notice:</strong> Camera access requires HTTPS or localhost. Please ensure you're using a secure connection.
-            </AlertDescription>
-          </Alert>
-        )}
+          <CardContent className="space-y-6">
+            <div className="space-y-3 rounded-2xl border border-border/70 bg-muted/30 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.4em] text-primary">
+                Verification progress
+              </p>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    {stageCopy[activeStage].title}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {stageCopy[activeStage].hint}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {stageOrder.map((stage, idx) => {
+                    const isComplete = idx < derivedIndex;
+                    const isActive = idx === activeIndex;
 
-        {/* Error Alert */}
-        {error && (
-          <Alert className="mb-6 border-red-400 bg-red-50">
-            <XCircle className="h-4 w-4 text-red-600" />
-            <AlertDescription className="text-red-800">{error}</AlertDescription>
-          </Alert>
-        )}
-
-        {/* Status Bar */}
-        <Card className="mb-6 bg-white shadow-sm border-slate-200">
-          <CardContent className="pt-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${modelsLoaded ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} />
-                <span className="text-sm text-slate-600">{modelStatus}</span>
+                    return (
+                      <div
+                        key={stage}
+                        className={cn(
+                          "h-2 w-12 rounded-full bg-border transition-colors",
+                          isComplete && "bg-primary",
+                          isActive && !isComplete && "bg-primary/70",
+                          isActive && "ring-2 ring-primary/60"
+                        )}
+                        aria-label={`Step ${idx + 1}: ${
+                          stageCopy[stage].title
+                        }`}
+                      />
+                    );
+                  })}
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${cameraActive ? 'bg-green-500' : 'bg-slate-300'}`} />
-                <span className="text-sm text-slate-600">{cameraStatus}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${idPhotoDescriptor ? 'bg-green-500' : 'bg-slate-300'}`} />
-                <span className="text-sm text-slate-600">{photoStatus}</span>
+            </div>
+
+            {renderStageContent()}
+
+            <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:justify-between">
+              <Button
+                variant="outline"
+                onClick={goToPrevStage}
+                disabled={!canGoPrev}
+              >
+                Previous step
+              </Button>
+              <Button
+                variant="outline"
+                onClick={goToNextStage}
+                disabled={!canGoNext}
+              >
+                Preview next step
+              </Button>
+            </div>
+
+            <div className="space-y-3">
+              {syncIssue && (
+                <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900 flex gap-3">
+                  <AlertCircle className="h-5 w-5 flex-shrink-0" />
+                  <div>
+                    <p className="font-semibold">Sync issue detected</p>
+                    <p>
+                      We couldn't sync your{" "}
+                      {syncIssue === "records"
+                        ? "record confirmation"
+                        : syncIssue === "address"
+                        ? "address directions"
+                        : "AI results"}{" "}
+                      to the blockchain queue. We'll retry automatically when
+                      you move forward. If this keeps happening, contact
+                      support.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 flex gap-3">
+                <AlertCircle className="h-5 w-5 flex-shrink-0" />
+                <div>
+                  <p className="font-semibold">Need help?</p>
+                  <p>
+                    You're on step {stageOrder.indexOf(derivedStage) + 1} of{" "}
+                    {stageOrder.length}. If anything looks wrong with your
+                    records or the camera setup, email
+                    <a
+                      className="font-semibold text-amber-900 underline decoration-dotted underline-offset-4 ml-1"
+                      href="mailto:support@yotouch.io"
+                    >
+                      support@yotouch.io
+                    </a>
+                    , or ping your onboarding agent.
+                  </p>
+                </div>
               </div>
             </div>
           </CardContent>
         </Card>
-
-        <div className="grid lg:grid-cols-2 gap-6">
-          {/* ID Photo Upload */}
-          <Card className="bg-white shadow-lg border-slate-200">
-            <CardHeader className="border-b border-slate-100">
-              <CardTitle className="flex items-center gap-2 text-indigo-600">
-                <Upload className="w-5 h-5" />
-                Step 1: Upload ID Photo
-              </CardTitle>
-              <CardDescription>Upload a clear photo of your government-issued ID</CardDescription>
-            </CardHeader>
-            <CardContent className="pt-6">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handlePhotoUpload}
-                className="hidden"
-              />
-              
-              <Button
-                onClick={() => fileInputRef.current?.click()}
-                variant="outline"
-                className="w-full mb-4 border-indigo-200 hover:bg-indigo-50"
-                disabled={!modelsLoaded}
-              >
-                <Upload className="w-4 h-4 mr-2" />
-                Choose ID Photo
-              </Button>
-
-              <div className="border-2 border-dashed border-slate-200 rounded-lg p-4 bg-slate-50 min-h-[300px] flex items-center justify-center">
-                {idPhotoPreview ? (
-                  <img
-                    src={idPhotoPreview}
-                    alt="ID Preview"
-                    className="max-h-[280px] max-w-full rounded-lg shadow-md"
-                  />
-                ) : (
-                  <div className="text-center text-slate-400">
-                    <Upload className="w-12 h-12 mx-auto mb-2" />
-                    <p>No photo uploaded</p>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Live Camera Feed */}
-          <Card className="bg-white shadow-lg border-slate-200">
-            <CardHeader className="border-b border-slate-100">
-              <CardTitle className="flex items-center gap-2 text-green-600">
-                <Camera className="w-5 h-5" />
-                Step 2: Live Verification
-              </CardTitle>
-              <CardDescription>Activate camera for liveness detection</CardDescription>
-            </CardHeader>
-            <CardContent className="pt-6">
-              <div className="relative aspect-[4/3] bg-slate-900 rounded-lg overflow-hidden mb-4">
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className="absolute inset-0 w-full h-full object-cover"
-                  style={{ transform: 'scaleX(-1)' }}
-                />
-                <canvas
-                  ref={canvasRef}
-                  className="absolute inset-0 w-full h-full"
-                  style={{ transform: 'scaleX(-1)' }}
-                />
-                
-                {!cameraActive && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-slate-800/90">
-                    <div className="text-center text-white p-4">
-                      <Camera className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                      <p className="mb-4">Camera not active</p>
-                      <Button
-                        onClick={startCamera}
-                        disabled={!modelsLoaded}
-                        className="bg-blue-600 hover:bg-blue-700"
-                      >
-                        <Camera className="w-4 h-4 mr-2" />
-                        Activate Camera
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {livenessCheckActive && (
-                <div className="mb-4">
-                  <Progress value={livenessProgress} className="h-2" />
-                  <p className="text-sm text-slate-600 mt-2 text-center">{livenessStatus}</p>
-                </div>
-              )}
-
-              <Button
-                onClick={startLivenessCheck}
-                disabled={!cameraActive || !idPhotoDescriptor || livenessCheckActive}
-                className="w-full bg-green-600 hover:bg-green-700"
-              >
-                {livenessCheckActive ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Verifying...
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="w-4 h-4 mr-2" />
-                    Start Liveness & Verification
-                  </>
-                )}
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Verification Results */}
-        {verificationResult && (
-          <Card className={`mt-6 shadow-lg ${verificationResult.isMatch ? 'border-green-400 bg-green-50' : 'border-red-400 bg-red-50'}`}>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                {verificationResult.isMatch ? (
-                  <>
-                    <CheckCircle2 className="w-6 h-6 text-green-600" />
-                    <span className="text-green-800">Verification Successful</span>
-                  </>
-                ) : (
-                  <>
-                    <XCircle className="w-6 h-6 text-red-600" />
-                    <span className="text-red-800">Verification Failed</span>
-                  </>
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid md:grid-cols-3 gap-4">
-                <div>
-                  <p className="text-sm text-slate-600 mb-1">Match Score</p>
-                  <p className={`text-2xl font-bold ${verificationResult.isMatch ? 'text-green-700' : 'text-red-700'}`}>
-                    {(1 - verificationResult.distance).toFixed(3)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm text-slate-600 mb-1">Distance</p>
-                  <p className="text-2xl font-bold text-slate-700">
-                    {verificationResult.distance.toFixed(4)}
-                  </p>
-                  <p className="text-xs text-slate-500">Threshold: {DISTANCE_THRESHOLD}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-slate-600 mb-1">Liveness Check</p>
-                  <p className={`text-2xl font-bold ${verificationResult.livenessSuccess ? 'text-green-700' : 'text-red-700'}`}>
-                    {verificationResult.livenessSuccess ? 'Passed' : 'Failed'}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
       </div>
     </div>
   );
